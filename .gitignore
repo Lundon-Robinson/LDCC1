@@ -73,7 +73,6 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
-*~
 
 # User-specific files
 *.user
