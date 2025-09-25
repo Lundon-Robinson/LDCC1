@@ -160,29 +160,34 @@ class ExcelWorksheetPDFGenerator:
     def _create_benefits_worksheet_pdf(self, benefits_data, filename, title, timestamp):
         """Create benefits worksheet and print to PDF as per procedures."""
         try:
-            # Use the Deposit & Withdrawal Sheet for benefits processing
-            workbook = load_workbook(self.deposit_withdrawal_file)
+            # For benefits processing, we'll create a simple Excel file with the benefits data
+            # This follows the procedure of creating a worksheet with current benefits
             
-            # Get the first worksheet (assuming it's the benefits worksheet)
-            worksheet = list(workbook.worksheets)[0]
+            # Create a new workbook for benefits
+            from openpyxl import Workbook
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Benefits Processing"
             
-            # Clear existing data and add benefits data
-            # This follows the procedure of updating the worksheet with current week's benefits
+            # Add title and timestamp
+            worksheet['A1'] = title
+            worksheet['A2'] = f"Generated: {timestamp}"
+            
+            # Add benefits data starting from row 4
             if isinstance(benefits_data, pd.DataFrame) and not benefits_data.empty:
-                # Clear old data (keep headers)
-                for row in worksheet.iter_rows(min_row=2):
-                    for cell in row:
-                        cell.value = None
+                # Add headers
+                start_row = 4
+                for c_idx, header in enumerate(benefits_data.columns, 1):
+                    worksheet.cell(row=start_row, column=c_idx, value=header)
                 
-                # Add new benefits data
-                for r_idx, row in enumerate(dataframe_to_rows(benefits_data, index=False, header=False), 2):
-                    for c_idx, value in enumerate(row, 1):
-                        if c_idx <= worksheet.max_column:
-                            worksheet.cell(row=r_idx, column=c_idx, value=value)
+                # Add data
+                for r_idx, (_, row) in enumerate(benefits_data.iterrows(), start_row + 1):
+                    for c_idx, value in enumerate(row.tolist(), 1):
+                        worksheet.cell(row=r_idx, column=c_idx, value=value)
             
-            # Save the updated benefits worksheet
-            base_name = Path(self.deposit_withdrawal_file).stem
-            temp_file = f"{base_name}_benefits_temp.xlsx"
+            # Save the benefits worksheet
+            base_name = "Benefits_Processing"
+            temp_file = f"{base_name}_temp.xlsx"
             workbook.save(temp_file)
             
             # Print to PDF
@@ -203,23 +208,27 @@ class ExcelWorksheetPDFGenerator:
     def _update_and_print_reconciliation_worksheet(self, reconciliation_data, output_pdf):
         """Update bank reconciliation worksheet and print to PDF."""
         try:
-            # Load the bank reconciliation file
-            workbook = load_workbook(self.bank_reconciliation_file)
-            
-            # Use the CURRENT sheet for reconciliation
-            if 'CURRENT' in workbook.sheetnames:
-                worksheet = workbook['CURRENT']
-            else:
-                worksheet = workbook.active
-            
-            # Update reconciliation data in the worksheet
+            # Create a new reconciliation worksheet since the original is .xls format
             # This follows the procedure of updating reconciliation figures before printing
+            from openpyxl import Workbook
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Bank Reconciliation"
+            
+            # Add reconciliation header
+            worksheet['A1'] = "LD Clients Cash Bank Reconciliation"
+            worksheet['A2'] = f"Generated: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+            
+            # Add reconciliation data
+            start_row = 4
+            for idx, (key, value) in enumerate(reconciliation_data.items()):
+                worksheet.cell(row=start_row + idx, column=1, value=f"{key}:")
+                worksheet.cell(row=start_row + idx, column=2, value=str(value))
+            
+            # Current week info
             current_week = datetime.now().isocalendar()[1]
             
-            # Find appropriate cells to update (this would be customized based on actual worksheet layout)
-            # For now, we'll save the workbook and print it
-            
-            temp_file = Path(self.bank_reconciliation_file).stem + "_recon_temp.xlsx"
+            temp_file = f"Bank_Reconciliation_Week_{current_week}_temp.xlsx"
             workbook.save(temp_file)
             
             # Print to PDF
