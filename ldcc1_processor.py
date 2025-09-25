@@ -33,10 +33,10 @@ class LDCC1Processor:
         """Initialize the application."""
         self.setup_logging()
         self.root = tk.Tk()
-        self.setup_gui()
         self.csv_file_path = None
         self.process_payments = tk.BooleanVar()
         self.data = None
+        self.setup_gui()
         
     def setup_logging(self):
         """Setup logging configuration."""
