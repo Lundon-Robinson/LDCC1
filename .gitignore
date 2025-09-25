@@ -89,4 +89,5 @@ Weekly Scanned Copies Folder/
 # Test files
 test_*.csv
 test_*.xlsx
+test_fix.py
 
