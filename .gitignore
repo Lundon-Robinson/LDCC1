@@ -80,3 +80,13 @@ Thumbs.db
 
 # Keep sample data for testing
 !sample_data.csv
+# Generated PDF files (test outputs)
+Weekly Scanned Copies Folder/
+*.pdf
+*_temp.xlsx
+*_temp.xls
+
+# Test files
+test_*.csv
+test_*.xlsx
+
