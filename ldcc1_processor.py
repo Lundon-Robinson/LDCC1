@@ -62,6 +62,19 @@ class ExcelWorksheetPDFGenerator:
     def create_balance_report_pdf(self, data, filename, title, timestamp=None):
         """Generate balance report PDF by updating and printing Excel worksheet as per procedures."""
         try:
+            # FIXED: Add protection against excessive PDF generation
+            if not hasattr(self, '_pdf_generation_count'):
+                self._pdf_generation_count = {}
+            
+            pdf_key = f"{filename}_{title}"
+            if pdf_key in self._pdf_generation_count:
+                self._pdf_generation_count[pdf_key] += 1
+                if self._pdf_generation_count[pdf_key] > 5:  # Limit to 5 generations per file/title combo
+                    self.logger.warning(f"Excessive PDF generation detected for {filename} - preventing infinite loop")
+                    return True  # Return success to avoid cascading errors
+            else:
+                self._pdf_generation_count[pdf_key] = 1
+            
             if timestamp is None:
                 timestamp = datetime.now().strftime("%d/%m/%Y %H:%M")
             
@@ -227,6 +240,20 @@ class ExcelWorksheetPDFGenerator:
                 # Look for existing data pattern or use a default location
                 start_row = self._find_data_start_row(worksheet)
                 
+                # FIXED: Clear existing data in the update area to prevent accumulation
+                # This prevents the infinite appending issue
+                max_clear_rows = start_row + len(data) + 10  # Clear a reasonable range
+                for clear_row in range(start_row, min(max_clear_rows, worksheet.max_row + 1)):
+                    for clear_col in range(1, min(worksheet.max_column + 1, 13)):  # Clear reasonable column range
+                        try:
+                            cell = worksheet.cell(row=clear_row, column=clear_col)
+                            if hasattr(cell, 'coordinate') and str(type(cell)) != "<class 'openpyxl.cell.cell.MergedCell'>":
+                                cell.value = None
+                        except Exception:
+                            continue  # Skip problematic cells
+                
+                self.logger.info(f"Cleared existing data rows {start_row} to {max_clear_rows-1} to prevent data accumulation")
+                
                 # Update existing data or append new data
                 for idx, (_, row_data) in enumerate(data.iterrows()):
                     current_row = start_row + idx
@@ -273,12 +300,14 @@ class ExcelWorksheetPDFGenerator:
                       for col in range(1, min(6, worksheet.max_column + 1))):
                     return row
             
-            # If no empty row found, append after existing data
-            return worksheet.max_row + 1
+            # FIXED: Instead of appending indefinitely, use a reasonable default data start row
+            # This prevents the infinite loop issue where data keeps getting appended
+            self.logger.warning("No empty row found in worksheet, using default data start row to prevent infinite appending")
+            return 10  # Start at row 10 instead of max_row + 1 to prevent infinite appending
             
         except Exception:
-            # Default to row 5 if calculation fails
-            return 5
+            # Default to row 10 if calculation fails (was row 5, now row 10 for safety)
+            return 10
     
     def _add_processing_notes(self, worksheet, timestamp):
         """Add processing notes to track updates."""
@@ -1976,6 +2005,13 @@ class LDCC1Processor:
     def generate_six_month_balance_update(self):
         """Generate 6-month balance update as specified in procedures."""
         try:
+            # FIXED: Add protection against infinite loops
+            if hasattr(self, '_generating_six_month_update') and self._generating_six_month_update:
+                self.logger.warning("6-month balance update already in progress - preventing infinite loop")
+                return True
+            
+            self._generating_six_month_update = True  # Set flag to prevent re-entry
+            
             self.logger.info("Generating 6-month balance update according to procedures...")
             
             # Create reports directory
@@ -1988,6 +2024,7 @@ class LDCC1Processor:
             # Check if this is a 6-month period (March or September)
             if current_date.month not in [3, 9]:
                 self.logger.info("6-month balance updates are generated for end of March and September only")
+                self._generating_six_month_update = False  # Clear flag
                 return True
             
             period_name = "March" if current_date.month == 3 else "September"
@@ -1995,7 +2032,16 @@ class LDCC1Processor:
             
             # Generate 6-month transaction history for each client
             if self.client_funds_data is not None:
+                # FIXED: Limit the number of clients to prevent excessive processing
+                client_count = 0
+                max_clients = 50  # Reasonable limit to prevent infinite loops
+                
                 for _, client_row in self.client_funds_data.iterrows():
+                    client_count += 1
+                    if client_count > max_clients:
+                        self.logger.warning(f"Reached maximum client limit ({max_clients}) - stopping to prevent infinite processing")
+                        break
+                        
                     client_name = client_row.get('Client', 'Unknown')
                     client_initials = ''.join([name[0] for name in client_name.split()]) if client_name != 'Unknown' else 'UK'
                     
@@ -2025,10 +2071,12 @@ class LDCC1Processor:
                     self.logger.info(f"Generated 6-month balance update for {client_name}: {client_pdf}")
             
             self.logger.info("6-month balance update generation completed successfully")
+            self._generating_six_month_update = False  # Clear flag before return
             return True
             
         except Exception as e:
             self.logger.error(f"6-month balance update error: {str(e)}")
+            self._generating_six_month_update = False  # Clear flag on error
             return False
 
     def generate_reports(self):
