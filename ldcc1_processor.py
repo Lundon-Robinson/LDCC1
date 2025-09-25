@@ -15,8 +15,14 @@ Author: LDCC1 Automation Team
 Version: 2.0.0
 """
 
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+# Conditional import for GUI components
+try:
+    import tkinter as tk
+    from tkinter import ttk, filedialog, messagebox, scrolledtext
+    GUI_AVAILABLE = True
+except ImportError:
+    GUI_AVAILABLE = False
+    print("Warning: GUI components not available. Running in headless mode.")
 import pandas as pd
 import os
 import sys
@@ -116,6 +122,8 @@ class ExcelWorksheetPDFGenerator:
     def _update_and_print_worksheet(self, excel_file, sheet_name, data, output_pdf, title, timestamp, updated_balances=False):
         """Update Excel worksheet with data and generate PDF following procedures."""
         try:
+            self.logger.info(f"Updating and printing worksheet: {excel_file} -> {output_pdf}")
+            
             # Load the workbook
             workbook = load_workbook(excel_file)
             
@@ -128,79 +136,167 @@ class ExcelWorksheetPDFGenerator:
             # ACTUALLY UPDATE THE WORKSHEET as per procedure requirements
             self.logger.info(f"Updating worksheet '{sheet_name}' with current data as per procedure")
             
-            # Update timestamp - look for date cell (usually has =TODAY() or similar)
-            for row in worksheet.iter_rows(min_row=1, max_row=5):
-                for cell in row:
-                    if cell.value and isinstance(cell.value, str):
-                        if '=TODAY()' in str(cell.value) or 'Date' in str(cell.value):
-                            # Update with current timestamp
-                            cell.value = timestamp
-                            self.logger.info(f"Updated timestamp in cell {cell.coordinate}: {timestamp}")
-                            break
+            # Update title and timestamp in the worksheet
+            self._update_worksheet_header(worksheet, title, timestamp)
             
-            # Update title if specified
-            if title and "balance" in title.lower():
-                # Look for the main title cell and update it
-                for row in worksheet.iter_rows(min_row=1, max_row=3):
-                    for cell in row:
-                        if cell.value and isinstance(cell.value, str):
-                            if 'BALANCE' in str(cell.value).upper() or 'CLIENT' in str(cell.value).upper():
-                                original_title = cell.value
-                                cell.value = f"{title} - {timestamp}"
-                                self.logger.info(f"Updated title from '{original_title}' to '{cell.value}'")
-                                break
+            # If we have data to update, actually update the worksheet content
+            if data is not None and not (isinstance(data, pd.DataFrame) and data.empty):
+                self._update_worksheet_data(worksheet, data, updated_balances)
             
-            # If this is for updated balances, we need to update the actual balance data
-            if updated_balances and isinstance(data, pd.DataFrame) and not data.empty:
-                self.logger.info("Updating individual client balances in worksheet as per procedure")
-                # Find balance columns and update with new data if applicable
-                # This is where actual balance updates would happen in a real implementation
-                # For now, we'll add a note to show this step was executed
-                
-                # Find an empty cell to add processing note
-                note_added = False
-                for row_num in range(1, 6):
-                    for col_num in range(8, 13):  # Look in columns H-L
-                        cell = worksheet.cell(row=row_num, column=col_num)
-                        if not cell.value:
-                            cell.value = f"Updated: {timestamp}"
-                            self.logger.info(f"Added processing note in {cell.coordinate}")
-                            note_added = True
-                            break
-                    if note_added:
-                        break
+            # Add processing notes to track the update
+            self._add_processing_notes(worksheet, timestamp)
             
-            # SAVE THE ACTUAL WORKBOOK WITH CHANGES
-            # First save to temp file for PDF generation
+            # SAVE THE ACTUAL WORKBOOK WITH CHANGES FIRST
+            # This is crucial - we update the original file as per procedure
+            try:
+                workbook.save(excel_file)
+                self.logger.info(f"✓ Successfully updated original Excel file: {excel_file}")
+            except Exception as save_error:
+                self.logger.error(f"Failed to save changes to original file {excel_file}: {save_error}")
+                # Continue with PDF generation even if original save failed
+            
+            # Create temp file for PDF generation to avoid file locking issues
             base_name = Path(excel_file).stem
-            temp_file = f"{base_name}_temp.xlsx"
+            temp_file = f"{base_name}_temp_{datetime.now().strftime('%H%M%S')}.xlsx"
             workbook.save(temp_file)
-            self.logger.info(f"Saved updated worksheet to temporary file: {temp_file}")
+            self.logger.info(f"Created temporary file for PDF generation: {temp_file}")
             
-            # Print worksheet to PDF following procedure requirements
+            # Generate PDF from the updated worksheet
             success = self._print_worksheet_to_pdf(temp_file, sheet_name, output_pdf)
-            
-            if success:
-                # If PDF generation succeeded, also save the original file with updates
-                # This ensures the Excel file itself is updated as per procedure
-                try:
-                    workbook.save(excel_file)
-                    self.logger.info(f"Saved changes back to original Excel file: {excel_file}")
-                except Exception as save_error:
-                    self.logger.warning(f"Could not save changes to original file {excel_file}: {save_error}")
             
             # Clean up temp file
             try:
                 os.remove(temp_file)
-            except:
-                pass
+                self.logger.debug(f"Cleaned up temporary file: {temp_file}")
+            except Exception as cleanup_error:
+                self.logger.warning(f"Could not clean up temp file {temp_file}: {cleanup_error}")
                 
             if success:
-                self.logger.info(f"Successfully generated PDF from updated Excel worksheet: {output_pdf}")
+                self.logger.info(f"✓ Successfully generated PDF from updated Excel worksheet: {output_pdf}")
                 return True
             else:
-                self.logger.error(f"Failed to print worksheet to PDF: {output_pdf}")
+                self.logger.error(f"Failed to generate PDF: {output_pdf}")
                 return False
+                
+        except Exception as e:
+            self.logger.error(f"Error updating and printing worksheet: {str(e)}")
+            import traceback
+            self.logger.debug(f"Update worksheet error traceback: {traceback.format_exc()}")
+            return False
+    
+    def _update_worksheet_header(self, worksheet, title, timestamp):
+        """Update worksheet header with title and timestamp."""
+        try:
+            # Look for existing title/header cells and update them
+            for row in range(1, 6):  # Check first 5 rows for header
+                for col in range(1, 6):  # Check first 5 columns
+                    cell = worksheet.cell(row=row, column=col)
+                    
+                    # Check if this looks like a title cell (has text and is in header area)
+                    if cell.value and isinstance(cell.value, str):
+                        cell_text = str(cell.value).lower()
+                        
+                        # Look for title-like content
+                        if any(keyword in cell_text for keyword in ['balance', 'benefit', 'client', 'fund', 'sheet', 'report']):
+                            original_title = cell.value
+                            cell.value = title
+                            self.logger.info(f"Updated title from '{original_title}' to '{title}' in cell {cell.coordinate}")
+                            break
+                        
+                        # Look for date-like content  
+                        elif any(keyword in cell_text for keyword in ['date', 'generated', 'updated', 'time']):
+                            cell.value = f"Updated: {timestamp}"
+                            self.logger.info(f"Updated timestamp in cell {cell.coordinate}")
+            
+            # If no existing header found, add one
+            if worksheet['A1'].value is None or not isinstance(worksheet['A1'].value, str):
+                worksheet['A1'] = title
+                worksheet['A2'] = f"Generated: {timestamp}"
+                self.logger.info("Added new header with title and timestamp")
+                
+        except Exception as e:
+            self.logger.warning(f"Could not update worksheet header: {e}")
+    
+    def _update_worksheet_data(self, worksheet, data, updated_balances):
+        """Update worksheet with actual data."""
+        try:
+            if isinstance(data, pd.DataFrame) and not data.empty:
+                self.logger.info(f"Updating worksheet with DataFrame containing {len(data)} rows")
+                
+                # Find appropriate location to insert data
+                # Look for existing data pattern or use a default location
+                start_row = self._find_data_start_row(worksheet)
+                
+                # Update existing data or append new data
+                for idx, (_, row_data) in enumerate(data.iterrows()):
+                    current_row = start_row + idx
+                    
+                    for col_idx, (col_name, value) in enumerate(row_data.items()):
+                        if pd.notna(value):  # Only update non-null values
+                            try:
+                                cell = worksheet.cell(row=current_row, column=col_idx + 1)
+                                
+                                # Skip merged cells - they can't be updated directly
+                                if hasattr(cell, 'coordinate') and str(type(cell)) != "<class 'openpyxl.cell.cell.MergedCell'>":
+                                    # Convert value to appropriate type
+                                    if isinstance(value, (int, float)):
+                                        cell.value = float(value)
+                                    elif isinstance(value, datetime):
+                                        cell.value = value
+                                    else:
+                                        cell.value = str(value)
+                                    
+                                    self.logger.debug(f"Updated cell {cell.coordinate} with value: {value}")
+                                else:
+                                    self.logger.debug(f"Skipped merged cell at row {current_row}, col {col_idx + 1}")
+                                    
+                            except Exception as cell_error:
+                                self.logger.debug(f"Could not update cell at row {current_row}, col {col_idx + 1}: {cell_error}")
+                                continue
+                
+                self.logger.info(f"Successfully updated worksheet data starting at row {start_row}")
+                
+            else:
+                self.logger.info("No data provided for worksheet update")
+                
+        except Exception as e:
+            self.logger.error(f"Error updating worksheet data: {e}")
+            # Don't fail the entire process if data update fails
+            self.logger.info("Continuing with PDF generation despite data update issues")
+    
+    def _find_data_start_row(self, worksheet):
+        """Find appropriate row to start data updates."""
+        try:
+            # Look for first empty row after header, or return default
+            for row in range(3, worksheet.max_row + 2):  # Start after likely header area
+                if all(worksheet.cell(row=row, column=col).value is None 
+                      for col in range(1, min(6, worksheet.max_column + 1))):
+                    return row
+            
+            # If no empty row found, append after existing data
+            return worksheet.max_row + 1
+            
+        except Exception:
+            # Default to row 5 if calculation fails
+            return 5
+    
+    def _add_processing_notes(self, worksheet, timestamp):
+        """Add processing notes to track updates."""
+        try:
+            # Find an empty area in the right side of the sheet to add processing notes
+            note_added = False
+            for row_num in range(1, 6):
+                for col_num in range(8, 13):  # Look in columns H-L
+                    cell = worksheet.cell(row=row_num, column=col_num)
+                    if not cell.value:
+                        cell.value = f"Processed: {timestamp}"
+                        self.logger.info(f"Added processing note in {cell.coordinate}")
+                        note_added = True
+                        break
+                if note_added:
+                    break
+        except Exception as e:
+            self.logger.warning(f"Could not add processing notes: {e}")
                 
         except Exception as e:
             self.logger.error(f"Error updating and printing worksheet: {str(e)}")
@@ -567,16 +663,23 @@ class ExcelWorksheetPDFGenerator:
         try:
             self.logger.info(f"Printing worksheet '{sheet_name}' from {excel_file} to PDF: {output_pdf}")
             
+            # Ensure output directory exists
+            os.makedirs(os.path.dirname(output_pdf), exist_ok=True)
+            
             # Method 1: Use LibreOffice headless mode (preferred for Excel compatibility)
-            if self._try_libreoffice_print_specific_sheet(excel_file, sheet_name, output_pdf):
-                return True
-            
-            # Method 2: Fallback to LibreOffice full workbook conversion
+            # This will create a PDF that looks like the actual Excel sheet
             if self._try_libreoffice_print(excel_file, output_pdf):
+                self.logger.info(f"Successfully created PDF using LibreOffice: {output_pdf}")
                 return True
             
-            # Method 3: Last resort - Python-based PDF generation
-            return self._fallback_pdf_generation(excel_file, sheet_name, output_pdf)
+            # Method 2: Try alternative LibreOffice approach with specific sheet selection
+            if self._try_libreoffice_print_specific_sheet(excel_file, sheet_name, output_pdf):
+                self.logger.info(f"Successfully created PDF using LibreOffice sheet selection: {output_pdf}")
+                return True
+            
+            # Method 3: Enhanced fallback - create Excel-like PDF that preserves worksheet appearance
+            self.logger.warning("LibreOffice not available, using enhanced fallback PDF generation")
+            return self._enhanced_fallback_pdf_generation(excel_file, sheet_name, output_pdf)
             
         except Exception as e:
             self.logger.error(f"Error printing worksheet to PDF: {str(e)}")
@@ -632,13 +735,34 @@ class ExcelWorksheetPDFGenerator:
             return False
     
     def _try_libreoffice_print(self, excel_file, output_pdf):
-        """Try to use LibreOffice to convert Excel to PDF."""
+        """Try to use LibreOffice to convert Excel to PDF - preserving Excel appearance."""
         try:
             # Check if LibreOffice is available
-            result = subprocess.run(['libreoffice', '--version'], 
-                                  capture_output=True, text=True, timeout=10)
+            try:
+                result = subprocess.run(['libreoffice', '--version'], 
+                                      capture_output=True, text=True, timeout=10)
+                libreoffice_available = result.returncode == 0
+            except (subprocess.SubprocessError, FileNotFoundError):
+                libreoffice_available = False
             
-            if result.returncode == 0:
+            if not libreoffice_available:
+                # Try alternative command names
+                for cmd in ['soffice', 'loffice', '/usr/bin/libreoffice']:
+                    try:
+                        result = subprocess.run([cmd, '--version'], 
+                                              capture_output=True, text=True, timeout=5)
+                        if result.returncode == 0:
+                            libreoffice_cmd = cmd
+                            libreoffice_available = True
+                            break
+                    except (subprocess.SubprocessError, FileNotFoundError):
+                        continue
+                else:
+                    libreoffice_cmd = 'libreoffice'
+            else:
+                libreoffice_cmd = 'libreoffice'
+            
+            if libreoffice_available:
                 self.logger.info(f"Using LibreOffice for Excel to PDF conversion: {result.stdout.strip()}")
                 
                 # Use LibreOffice to convert Excel to PDF
@@ -648,68 +772,93 @@ class ExcelWorksheetPDFGenerator:
                 
                 # Ensure the directory exists
                 os.makedirs(pdf_dir, exist_ok=True)
-                    
+                
+                # Create absolute paths to avoid LibreOffice issues
+                excel_abs = os.path.abspath(excel_file)
+                pdf_dir_abs = os.path.abspath(pdf_dir)
+                
                 cmd = [
-                    'libreoffice', 
+                    libreoffice_cmd, 
                     '--headless', 
+                    '--invisible',
+                    '--nodefault',
+                    '--nolockcheck',
+                    '--nologo',
+                    '--norestore',
                     '--convert-to', 'pdf',
-                    '--outdir', pdf_dir,
-                    excel_file
+                    '--outdir', pdf_dir_abs,
+                    excel_abs
                 ]
                 
                 self.logger.info(f"Running LibreOffice command: {' '.join(cmd)}")
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                
+                # Run with environment variables to avoid GUI issues
+                env = os.environ.copy()
+                env['DISPLAY'] = ''
+                
+                result = subprocess.run(cmd, capture_output=True, text=True, 
+                                      timeout=120, env=env, cwd=pdf_dir_abs)
                 
                 if result.returncode == 0:
-                    # Rename the generated PDF to match expected filename
-                    generated_pdf = os.path.join(pdf_dir, 
+                    # LibreOffice creates PDF with same base name as Excel file
+                    generated_pdf = os.path.join(pdf_dir_abs, 
                                                os.path.splitext(os.path.basename(excel_file))[0] + '.pdf')
                     
                     if os.path.exists(generated_pdf):
-                        if generated_pdf != output_pdf:
-                            # Rename to the expected output filename
+                        if generated_pdf != os.path.abspath(output_pdf):
+                            # Move to the expected output filename
                             try:
-                                os.rename(generated_pdf, output_pdf)
-                                self.logger.info(f"Renamed PDF from {generated_pdf} to {output_pdf}")
-                            except Exception as rename_error:
-                                # If rename fails, try copy
                                 import shutil
-                                shutil.copy2(generated_pdf, output_pdf)
-                                os.remove(generated_pdf)
-                                self.logger.info(f"Copied PDF from {generated_pdf} to {output_pdf}")
+                                shutil.move(generated_pdf, output_pdf)
+                                self.logger.info(f"Moved PDF from {generated_pdf} to {output_pdf}")
+                            except Exception as move_error:
+                                # If move fails, try copy then delete
+                                try:
+                                    shutil.copy2(generated_pdf, output_pdf)
+                                    os.remove(generated_pdf)
+                                    self.logger.info(f"Copied PDF from {generated_pdf} to {output_pdf}")
+                                except Exception as copy_error:
+                                    self.logger.error(f"Failed to move/copy PDF: {move_error}, {copy_error}")
+                                    return False
                         
                         # Verify the final PDF exists and has content
-                        if os.path.exists(output_pdf) and os.path.getsize(output_pdf) > 0:
+                        if os.path.exists(output_pdf) and os.path.getsize(output_pdf) > 1024:  # At least 1KB
                             size = os.path.getsize(output_pdf)
-                            self.logger.info(f"Successfully converted Excel to PDF using LibreOffice: {output_pdf} ({size} bytes)")
+                            self.logger.info(f"✓ Successfully converted Excel to PDF using LibreOffice: {output_pdf} ({size} bytes)")
                             return True
                         else:
-                            self.logger.error(f"Generated PDF is empty or missing: {output_pdf}")
+                            self.logger.error(f"Generated PDF is too small or missing: {output_pdf}")
                     else:
                         self.logger.error(f"Expected generated PDF not found: {generated_pdf}")
+                        # List files in directory for debugging
+                        try:
+                            files_in_dir = os.listdir(pdf_dir_abs)
+                            self.logger.debug(f"Files in output directory: {files_in_dir}")
+                        except:
+                            pass
                 else:
                     self.logger.error(f"LibreOffice conversion failed with return code {result.returncode}")
                     if result.stdout:
-                        self.logger.error(f"LibreOffice stdout: {result.stdout}")
+                        self.logger.debug(f"LibreOffice stdout: {result.stdout}")
                     if result.stderr:
                         self.logger.error(f"LibreOffice stderr: {result.stderr}")
             else:
-                self.logger.warning("LibreOffice version check failed")
+                self.logger.warning("LibreOffice not found on system - will use fallback method")
                     
         except subprocess.TimeoutExpired:
-            self.logger.error("LibreOffice conversion timed out")
-        except FileNotFoundError:
-            self.logger.warning("LibreOffice not found on system")
-        except subprocess.SubprocessError as e:
-            self.logger.error(f"LibreOffice subprocess error: {e}")
+            self.logger.error("LibreOffice conversion timed out after 120 seconds")
         except Exception as e:
             self.logger.error(f"Unexpected error in LibreOffice conversion: {e}")
+            import traceback
+            self.logger.debug(f"LibreOffice error traceback: {traceback.format_exc()}")
             
         return False
     
-    def _fallback_pdf_generation(self, excel_file, sheet_name, output_pdf):
-        """Fallback PDF generation that preserves Excel worksheet appearance."""
+    def _enhanced_fallback_pdf_generation(self, excel_file, sheet_name, output_pdf):
+        """Enhanced fallback PDF generation that closely mimics Excel worksheet appearance."""
         try:
+            self.logger.info(f"Using enhanced fallback PDF generation for {excel_file}")
+            
             # Load the Excel file
             workbook = load_workbook(excel_file)
             
@@ -717,24 +866,138 @@ class ExcelWorksheetPDFGenerator:
                 worksheet = workbook[sheet_name]
             else:
                 worksheet = workbook.active
+                self.logger.info(f"Sheet '{sheet_name}' not found, using active sheet: {worksheet.title}")
             
-            # Convert worksheet to DataFrame for PDF generation
+            # Get worksheet dimensions and data
+            max_row = worksheet.max_row
+            max_col = worksheet.max_column
+            
+            self.logger.info(f"Processing worksheet with {max_row} rows and {max_col} columns")
+            
+            # Extract all cell data including formatting information
             data = []
-            for row in worksheet.iter_rows(values_only=True):
-                if any(cell is not None for cell in row):  # Skip empty rows
-                    data.append(row)
-            
-            if data:
-                # Create DataFrame
-                df = pd.DataFrame(data[1:], columns=data[0] if data else None)
+            for row_idx in range(1, max_row + 1):
+                row_data = []
+                for col_idx in range(1, max_col + 1):
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
+                    
+                    # Get cell value
+                    cell_value = cell.value
+                    if cell_value is None:
+                        cell_value = ""
+                    elif isinstance(cell_value, datetime):
+                        cell_value = cell_value.strftime('%Y-%m-%d')
+                    else:
+                        cell_value = str(cell_value)
+                    
+                    row_data.append(cell_value)
                 
-                # Generate PDF using ReportLab but with Excel-like formatting
-                return self._create_excel_like_pdf(df, output_pdf, sheet_name)
+                # Only add non-empty rows or rows with at least one non-empty cell
+                if any(cell.strip() for cell in row_data if isinstance(cell, str)):
+                    data.append(row_data)
             
-            return False
+            if not data:
+                self.logger.warning("No data found in worksheet")
+                return False
+            
+            # Create PDF using ReportLab with Excel-like styling
+            from reportlab.pdfgen import canvas
+            from reportlab.lib.pagesizes import A4, landscape
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+            from reportlab.lib import colors
+            from reportlab.lib.units import inch
+            
+            # Use landscape orientation for better Excel compatibility
+            page_size = landscape(A4)
+            
+            # Create the PDF document
+            doc = SimpleDocTemplate(
+                output_pdf,
+                pagesize=page_size,
+                rightMargin=0.5*inch,
+                leftMargin=0.5*inch,
+                topMargin=0.5*inch,
+                bottomMargin=0.5*inch
+            )
+            
+            # Create table with data
+            story = []
+            
+            # Add title
+            from reportlab.platypus import Paragraph, Spacer
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            
+            styles = getSampleStyleSheet()
+            title_style = ParagraphStyle(
+                'CustomTitle',
+                parent=styles['Heading1'],
+                fontSize=14,
+                spaceAfter=20,
+                alignment=1  # Center alignment
+            )
+            
+            title_text = f"Excel Worksheet: {sheet_name} (from {os.path.basename(excel_file)})"
+            story.append(Paragraph(title_text, title_style))
+            story.append(Spacer(1, 12))
+            
+            # Calculate appropriate font size based on data width
+            font_size = min(8, max(6, 80 / max_col))
+            
+            # Create table with Excel-like styling
+            table = Table(data)
+            
+            # Apply Excel-like table style
+            table.setStyle(TableStyle([
+                # Header row styling (if exists)
+                ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), font_size),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+                
+                # Data rows
+                ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                
+                # Alternating row colors for better readability
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.Color(0.95, 0.95, 0.95)]),
+            ]))
+            
+            story.append(table)
+            
+            # Add footer with generation info
+            footer_style = ParagraphStyle(
+                'Footer',
+                parent=styles['Normal'],
+                fontSize=8,
+                alignment=1,
+                spaceAfter=10
+            )
+            
+            footer_text = f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by LDCC1 Processor"
+            story.append(Spacer(1, 20))
+            story.append(Paragraph(footer_text, footer_style))
+            
+            # Build the PDF
+            doc.build(story)
+            
+            # Verify PDF was created
+            if os.path.exists(output_pdf) and os.path.getsize(output_pdf) > 1024:
+                size = os.path.getsize(output_pdf)
+                self.logger.info(f"✓ Enhanced fallback PDF generated successfully: {output_pdf} ({size} bytes)")
+                return True
+            else:
+                self.logger.error(f"Enhanced fallback PDF generation failed: {output_pdf}")
+                return False
             
         except Exception as e:
-            self.logger.error(f"Fallback PDF generation error: {str(e)}")
+            self.logger.error(f"Enhanced fallback PDF generation error: {str(e)}")
+            import traceback
+            self.logger.debug(f"Fallback PDF error traceback: {traceback.format_exc()}")
             return False
     
     def _create_excel_like_pdf(self, data, filename, title):
@@ -790,15 +1053,30 @@ class LDCC1Processor:
     def __init__(self):
         """Initialize the application."""
         self.setup_logging()
-        self.root = tk.Tk()
+        
+        # Initialize core attributes
         self.csv_file_path = None
-        self.process_payments = tk.BooleanVar()
-        self.monthly_reconciliation = tk.BooleanVar()
         self.data = None
         self.client_funds_data = None
         self.benefits_data = None
         self.pdf_generator = ExcelWorksheetPDFGenerator(self.logger)
-        self.setup_gui()
+        
+        # Initialize GUI components only if available
+        if GUI_AVAILABLE:
+            try:
+                self.root = tk.Tk()
+                self.process_payments = tk.BooleanVar()
+                self.monthly_reconciliation = tk.BooleanVar()
+                self.setup_gui()
+            except Exception as gui_error:
+                self.logger.warning(f"GUI initialization failed: {gui_error}")
+                self.root = None
+                self.process_payments = None
+                self.monthly_reconciliation = None
+        else:
+            self.root = None
+            self.process_payments = None
+            self.monthly_reconciliation = None
 
     def setup_logging(self):
         """Setup logging configuration."""
@@ -1995,14 +2273,74 @@ def main():
             print("Error: This script requires Python 3.6 or higher")
             sys.exit(1)
 
-        # Create and run application
-        app = LDCC1Processor()
-        app.run()
+        # Check if we can run the GUI version
+        if GUI_AVAILABLE:
+            try:
+                # Create and run GUI application
+                app = LDCC1Processor()
+                app.run()
+            except Exception as gui_error:
+                print(f"GUI error: {gui_error}")
+                print("Falling back to command line mode")
+                run_headless_mode()
+        else:
+            print("GUI not available, running in headless mode")
+            run_headless_mode()
 
     except Exception as e:
         print(f"Fatal error: {e}")
         traceback.print_exc()
         sys.exit(1)
+
+
+def run_headless_mode():
+    """Run in headless mode for testing and development."""
+    print("LDCC1 Processor v2.0.0 - Headless Mode")
+    print("=" * 50)
+    
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # Test PDF generation functionality
+        logger.info("Testing PDF generation functionality...")
+        
+        pdf_gen = ExcelWorksheetPDFGenerator(logger)
+        
+        # Test with available Excel files
+        test_files = [
+            'Client Funds spreadsheet.xlsx',
+            'Deposit & Withdrawal Sheet.xlsx'
+        ]
+        
+        for test_file in test_files:
+            if os.path.exists(test_file):
+                logger.info(f"Testing PDF generation with: {test_file}")
+                
+                # Create output directory
+                os.makedirs('test_output', exist_ok=True)
+                
+                output_pdf = f"test_output/{os.path.splitext(test_file)[0]}_test.pdf"
+                
+                # Test the PDF generation
+                success = pdf_gen._print_worksheet_to_pdf(test_file, 'Sheet1', output_pdf)
+                
+                if success and os.path.exists(output_pdf):
+                    size = os.path.getsize(output_pdf)
+                    logger.info(f"✓ PDF generated successfully: {output_pdf} ({size} bytes)")
+                else:
+                    logger.error(f"✗ PDF generation failed for: {test_file}")
+                    
+        logger.info("Headless mode testing completed")
+        
+    except Exception as e:
+        logger.error(f"Headless mode error: {e}")
+        import traceback
+        logger.debug(f"Traceback: {traceback.format_exc()}")
 
 
 if __name__ == "__main__":
