@@ -5,6 +5,10 @@
 pandas>=1.3.0
 openpyxl>=3.0.7
 
+# PDF generation for reports as required by procedures
+reportlab>=3.6.0
+matplotlib>=3.5.0
+
 # GUI framework (usually included with Python)
 # tkinter - included with Python standard library
 
