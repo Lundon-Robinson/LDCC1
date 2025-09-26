@@ -1424,9 +1424,15 @@ class LDCC1Processor:
 
     def update_progress(self, value, status="Processing..."):
         """Update progress bar and status."""
-        self.progress_var.set(value)
-        self.status_var.set(status)
-        self.root.update()
+        # Check if we're in GUI mode
+        if hasattr(self, 'progress_var') and hasattr(self, 'status_var'):
+            self.progress_var.set(value)
+            self.status_var.set(status)
+            if hasattr(self, 'root'):
+                self.root.update()
+        else:
+            # Headless mode - just log the progress
+            self.logger.info(f"Progress: {value}% - {status}")
 
     def load_data(self):
         """Load data from selected file and any related spreadsheets."""
@@ -1825,6 +1831,9 @@ class LDCC1Processor:
                     break
             
             # Step 19: Enter benefits details for each service user
+            self.logger.info("Step 19: ✏️ Adding individual benefit amounts for each service user...")
+            self.update_progress(68, "Adding benefit details...")
+            
             if hasattr(self, 'benefits_data') and self.benefits_data is not None:
                 # Match benefits to clients and update Benefits Amount column
                 for _, benefit_row in self.benefits_data.iterrows():
@@ -1837,14 +1846,20 @@ class LDCC1Processor:
                         if client_surname and surname in str(client_surname).upper():
                             # Update Benefits Amount column (typically column E or F)
                             benefits_worksheet.cell(row=row_num, column=5, value=amount)
-                            self.logger.info(f"Step 19: Added benefit £{amount:.2f} for {surname}")
+                            self.logger.info(f"Step 19: ✅ Added benefit £{amount:.2f} for {surname}")
                             break
             
             # Save the updated Deposit & Withdrawal Sheet
+            self.logger.info("Step 19: 💾 Saving updated Deposit & Withdrawal Sheet...")
+            self.update_progress(70, "Saving Deposit & Withdrawal changes...")
+            
             dw_workbook.save(deposit_withdrawal_file)
-            self.logger.info("Step 19: Saved updated Deposit & Withdrawal Sheet")
+            self.logger.info("Step 19: ✅ Saved updated Deposit & Withdrawal Sheet")
             
             # Print to PDF as 'Deposit and withdrawal – benefits'
+            self.logger.info("Step 19: 🖨️ Creating Deposit & Withdrawal PDF using Excel print-to-PDF...")
+            self.update_progress(72, "Creating Benefits PDF...")
+            
             pdf_filename = weekly_folder / "Deposit and withdrawal - benefits.pdf"
             success = self.pdf_generator._print_worksheet_to_pdf(
                 deposit_withdrawal_file,
@@ -1853,10 +1868,10 @@ class LDCC1Processor:
             )
             
             if success:
-                self.logger.info(f"Step 19: ✓ Generated PDF: {pdf_filename}")
+                self.logger.info(f"Step 19: ✅ Generated PDF using Excel print-to-PDF: {pdf_filename}")
                 return True
             else:
-                self.logger.error(f"Step 19: Failed to generate PDF")
+                self.logger.error(f"Step 19: ❌ Failed to generate PDF")
                 return False
                 
         except Exception as e:
@@ -1868,11 +1883,21 @@ class LDCC1Processor:
         try:
             from openpyxl import load_workbook
             
-            # Step 20: Update individual client tabs with benefits received
+            # Step 20: Update individual client tabs with benefits received (show visual processing)
             client_funds_file = "Client Funds spreadsheet.xlsx"
-            workbook = load_workbook(client_funds_file)
             
-            self.logger.info("Step 20: Updating individual client tabs with benefits received")
+            self.logger.info(f"Step 20: 📂 Re-opening Client Funds spreadsheet: {client_funds_file}")
+            self.update_progress(75, "Opening Client Funds for final updates...")
+            
+            # Show visual file processing
+            import time
+            time.sleep(1)  # Brief pause to show file opening
+            
+            workbook = load_workbook(client_funds_file)
+            self.logger.info(f"Step 20: ✅ Excel file loaded for individual client updates")
+            
+            self.logger.info("Step 20: 👥 Updating individual client tabs with benefits received")
+            self.update_progress(78, "Updating individual client tabs...")
             
             if hasattr(self, 'benefits_data') and self.benefits_data is not None:
                 for _, benefit_row in self.benefits_data.iterrows():
@@ -1891,10 +1916,13 @@ class LDCC1Processor:
                             client_sheet.cell(row=last_row, column=3, value=amount)
                             client_sheet.cell(row=last_row, column=4, value=f"=C{last_row}+D{last_row-1}")  # Running balance
                             
-                            self.logger.info(f"Step 20: Updated {sheet_name} tab with benefit £{amount:.2f}")
+                            self.logger.info(f"Step 20: ✅ Updated {sheet_name} tab with benefit £{amount:.2f}")
                             break
             
             # Step 21: Update summary tab and verify balances
+            self.logger.info("Step 21: 📊 Updating SUMMARY tab with final balance information")
+            self.update_progress(82, "Updating SUMMARY tab...")
+            
             summary_sheet = workbook['SUMMARY']
             
             # Update the title for after benefits
@@ -1904,14 +1932,20 @@ class LDCC1Processor:
                     cell = summary_sheet.cell(row=row, column=col)
                     if cell.value and 'balance' in str(cell.value).lower():
                         cell.value = f"Balance after benefits but before other credits & withdrawals - {today_date}"
-                        self.logger.info(f"Step 21: Updated balance title in cell {cell.coordinate}")
+                        self.logger.info(f"Step 21: ✅ Updated balance title in cell {cell.coordinate}")
                         break
             
             # Save the updated Client Funds spreadsheet
+            self.logger.info("Step 21: 💾 Saving final Client Funds updates...")
+            self.update_progress(85, "Saving final Excel changes...")
+            
             workbook.save(client_funds_file)
-            self.logger.info("Step 21: Saved updated Client Funds spreadsheet")
+            self.logger.info("Step 21: ✅ Saved updated Client Funds spreadsheet")
             
             # Print summary tab to PDF as 'Balance after benefits but before other credits & withdrawals'
+            self.logger.info("Step 21: 🖨️ Generating final balance PDF using Excel print-to-PDF...")
+            self.update_progress(88, "Creating final balance PDF...")
+            
             pdf_filename = weekly_folder / "Balance after benefits but before other credits & withdrawals.pdf"
             success = self.pdf_generator._print_worksheet_to_pdf(
                 client_funds_file,
